@@ -61,7 +61,33 @@ final class Recorder: NSObject, ObservableObject, SCStreamDelegate, SCRecordingO
     }
     stream = nil
     startedAt = nil
+    if let mov = lastFile {
+      do {
+        lastFile = try await Self.exportAudio(mov)
+      } catch {
+        self.error = "m4a 변환 실패, mov는 남아 있어요: \(error.localizedDescription)"
+      }
+    }
     saving = false
+  }
+
+  // SCRecordingOutput always writes video and puts system audio and mic on separate tracks,
+  // which many players play only one of. Mix every audio track down into a single m4a.
+  private static func exportAudio(_ mov: URL) async throws -> URL {
+    let asset = AVURLAsset(url: mov)
+    let comp = AVMutableComposition()
+    for track in try await asset.loadTracks(withMediaType: .audio) {
+      let range = try await track.load(.timeRange)
+      let ct = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+      try ct?.insertTimeRange(range, of: track, at: range.start)
+    }
+    guard let export = AVAssetExportSession(asset: comp, presetName: AVAssetExportPresetAppleM4A) else {
+      throw NSError(domain: "Rec", code: 2, userInfo: [NSLocalizedDescriptionKey: "export 세션 생성 실패"])
+    }
+    let m4a = mov.deletingPathExtension().appendingPathExtension("m4a")
+    try await export.export(to: m4a, as: .m4a)
+    try FileManager.default.removeItem(at: mov)
+    return m4a
   }
 
   nonisolated func recordingOutputDidFinishRecording(_ r: SCRecordingOutput) {
